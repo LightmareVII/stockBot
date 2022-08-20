@@ -1,0 +1,123 @@
+default:
+  image: ubuntu:20.04
+
+stages:
+  - maintainDataStream
+  - dataGather
+  - dataAnalysis
+  - Rebuilding
+
+### dataStream (Refresh, Maintain)
+stockBot_dataStream-Refresh:
+  stage: Rebuilding
+  tags:
+    - stockRunner_1-1
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      changes:
+        - Dockerfiles/dataStream/*
+      when: always
+  script:
+    - docker container stop stockBot_dataStream || echo No Container to stop
+    - docker container rm stockBot_dataStream || echo No Container to rm
+    - docker image rm stockbot_datastream:1.0 || echo No Image to rm
+    - docker build -t stockbot_datastream:1.0 Dockerfiles/dataStream/
+    - docker run --name stockBot_dataStream --detach --restart always -e "APCA_API_BASE_URL=$alpacaBaseURL_Paper" -e "APCA_API_KEY_ID=$alpacaPaperID" -e "APCA_API_SECRET_KEY=$alpacaPaperSecret" -v /stockBotData/:/stockBotData stockbot_datastream:1.0
+
+stockBot_dataStream-Maintain:
+  stage: maintainDataStream
+  tags:
+    - stockRunner_1-1
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      changes:
+        - Dockerfiles/dataStream/*
+      when: never
+    - if: '$stockBot_dataStream == "true"'
+      when: always
+  script:
+    - docker image inspect stockbot_datastream:1.0 || docker build -t stockbot_datastream:1.0 Dockerfiles/dataStream/
+    - docker start stockBot_dataStream || docker run --name stockBot_dataStream --detach --restart always -e "APCA_API_BASE_URL=$alpacaBaseURL_Paper" -e "APCA_API_KEY_ID=$alpacaPaperID" -e "APCA_API_SECRET_KEY=$alpacaPaperSecret" -v /stockBotData/:/stockBotData stockbot_datastream:1.0
+
+### Gather Account Info (Refresh, Execute)
+accountInfo-Refresh:
+  stage: Rebuilding
+  tags:
+    - stockRunners
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      changes:
+        - Dockerfiles/accountInfo/*
+      when: always
+  script:
+    - docker container stop stockBot_accountInfo || echo No Container to stop
+    - docker container rm stockBot_accountInfo || echo No Container to rm
+    - docker image rm stockbot_accountinfo:1.0 || echo No Image to rm
+    - docker build -t stockbot_accountinfo:1.0 Dockerfiles/accountInfo/
+
+accountInfo-Execute:
+  interruptible: true
+  stage: dataGather
+  tags:
+    - stockRunners
+  rules:
+    - if: '$accountInfo == "true"'
+      when: delayed
+      start_in: 40 seconds
+  script:
+    - docker container start stockBot_accountInfo || docker run --name stockBot_accountInfo -e "APCA_API_BASE_URL=$alpacaBaseURL_Paper" -e "APCA_API_KEY_ID=$alpacaPaperID" -e "APCA_API_SECRET_KEY=$alpacaPaperSecret" -v /stockBotData/:/stockBotData stockbot_accountinfo:1.0
+
+### emaDataPull (Refresh, Execute)
+emaDataPull-Refresh:
+  stage: Rebuilding
+  tags:
+    - stockRunners
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      changes:
+        - Dockerfiles/emaDataPull/*
+      when: always
+  script:
+    - docker image rm stockbot_emadatapull:1.0 || echo No Image to rm
+    - docker build -t stockbot_emadatapull:1.0 Dockerfiles/emaDataPull/
+
+emaDataPull-Execute:
+  stage: dataGather
+  tags:
+    - stockRunners
+  rules:
+    - if: '$emaDataPull == "true"'
+      when: always
+  script:
+    - docker container stop stockBot_emaDataPull || echo No Container to stop
+    - docker container rm stockBot_emaDataPull || echo No Container to rm
+    - docker run --name stockBot_emaDataPull -e "APCA_API_BASE_URL=$alpacaBaseURL_Paper" -e "APCA_API_KEY_ID=$alpacaPaperID" -e "APCA_API_SECRET_KEY=$alpacaPaperSecret" -v /stockBotData/:/stockBotData stockbot_emadatapull:1.0
+
+
+### Evaluate Trades (Refresh, Execute)
+evaluateTrades-Refresh:
+  stage: Rebuilding
+  tags:
+    - stockRunners
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      changes:
+        - Dockerfiles/evaluateTrades/*
+      when: always
+  script:
+    - docker image rm stockbot_evaluatetrades:1.0 || echo No Image to rm
+    - docker build -t stockbot_evaluatetrades:1.0 Dockerfiles/evaluateTrades/
+
+evaluateTrades-Execute:
+  stage: dataAnalysis
+  tags:
+    - stockRunners
+  rules:
+    - if: '$evaluateTrade == "true"'
+      when: always
+  variables:
+    symbol: $symbol
+  script:
+    - docker container stop "stockBot_evaluateTrades-$symbol" || echo No Container to stop
+    - docker container rm "stockBot_evaluateTrades-$symbol" || echo No Container to rm
+    - docker run --name "stockBot_evaluateTrades-$symbol" -e "APCA_API_BASE_URL=$alpacaBaseURL_Paper" -e "APCA_API_KEY_ID=$alpacaPaperID" -e "APCA_API_SECRET_KEY=$alpacaPaperSecret" -e "symbol=$symbol" -v /stockBotData/:/stockBotData stockbot_evaluatetrades:1.0
